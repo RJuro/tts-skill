@@ -8,7 +8,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 
-from app.config import TTS_API_KEY, PLAYLIST_PIN, MAX_TEXT_LENGTH
+from app.config import TTS_API_KEY, PLAYLIST_PIN, MAX_TEXT_LENGTH, AVAILABLE_VOICES, DEFAULT_VOICE
 from app import database as db
 from app.tts import submit_tts_job, check_tts_status, download_audio
 from app.groq_service import generate_title_and_description
@@ -51,6 +51,7 @@ def check_pin(pin: str) -> bool:
 class GenerateRequest(BaseModel):
     text: str
     title: Optional[str] = None
+    voice: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):
@@ -122,6 +123,11 @@ async def api_generate(
     if len(text) > MAX_TEXT_LENGTH:
         raise HTTPException(status_code=400, detail=f"Text too long (max {MAX_TEXT_LENGTH} chars)")
 
+    # Validate voice if provided
+    voice = request.voice
+    if voice and voice not in AVAILABLE_VOICES:
+        raise HTTPException(status_code=400, detail=f"Invalid voice. Available: {', '.join(AVAILABLE_VOICES.keys())}")
+
     # Generate title/description if not provided
     title = request.title
     description = None
@@ -140,7 +146,7 @@ async def api_generate(
 
     # Submit to RunPod
     try:
-        runpod_job_id = await submit_tts_job(text)
+        runpod_job_id = await submit_tts_job(text, voice)
         active_jobs[gen_id] = runpod_job_id
 
         # Start background processing
@@ -199,7 +205,8 @@ async def home(request: Request, pin: Optional[str] = None):
 async def web_generate(
     request: Request,
     background_tasks: BackgroundTasks,
-    text: str = Form(...)
+    text: str = Form(...),
+    voice: str = Form(DEFAULT_VOICE)
 ):
     """Handle web form submission."""
     # Verify PIN
@@ -210,6 +217,10 @@ async def web_generate(
     text = text.strip()
     if not text or len(text) > MAX_TEXT_LENGTH:
         return RedirectResponse(url="/", status_code=303)
+
+    # Validate voice
+    if voice not in AVAILABLE_VOICES:
+        voice = DEFAULT_VOICE
 
     # Generate title/description
     title, description = await generate_title_and_description(text)
@@ -223,7 +234,7 @@ async def web_generate(
 
     # Submit to RunPod
     try:
-        runpod_job_id = await submit_tts_job(text)
+        runpod_job_id = await submit_tts_job(text, voice)
         background_tasks.add_task(process_tts_job, gen_id, runpod_job_id)
     except Exception as e:
         db.update_generation_failed(gen_id, str(e))
@@ -646,6 +657,54 @@ def get_playlist_page(generations: list) -> str:
             height: 18px;
         }}
 
+        /* Voice Select */
+        .form-row {{
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }}
+
+        .voice-select-wrap {{
+            flex: 1;
+        }}
+
+        .voice-label {{
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.375rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }}
+
+        .voice-select {{
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-deep);
+            color: var(--text-primary);
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 0.9375rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+        }}
+
+        .voice-select:focus {{
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }}
+
+        .voice-select option {{
+            background: var(--bg-card);
+            color: var(--text-primary);
+        }}
+
         /* Playlist */
         .playlist-header {{
             display: flex;
@@ -998,6 +1057,14 @@ def get_playlist_page(generations: list) -> str:
             </div>
             <form method="post" action="/generate">
                 <textarea name="text" placeholder="Paste your text here to generate audio..." required></textarea>
+                <div class="form-row">
+                    <div class="voice-select-wrap">
+                        <label class="voice-label">Voice</label>
+                        <select name="voice" class="voice-select">
+                            {"".join(f'<option value="{k}"{" selected" if k == DEFAULT_VOICE else ""}>{v}</option>' for k, v in AVAILABLE_VOICES.items())}
+                        </select>
+                    </div>
+                </div>
                 <button type="submit" class="submit-btn">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>

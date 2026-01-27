@@ -22,3 +22,10 @@ PLAYLIST_PIN = os.getenv("PLAYLIST_PIN", "3279")
 DEFAULT_VOICE = "af_heart"
 DEFAULT_SPEED = 1.0
 MAX_TEXT_LENGTH = 25000  # ~4000 words
+
+# Available voices
+AVAILABLE_VOICES = {
+    "af_heart": "Heart (Female)",
+    "am_michael": "Michael (Male)",
+    "am_puck": "Puck (Male)",
+}

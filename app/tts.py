@@ -14,7 +14,7 @@ def clean_text_for_tts(text: str) -> str:
     return cleaned
 
 
-async def submit_tts_job(text: str) -> str:
+async def submit_tts_job(text: str, voice: str | None = None) -> str:
     """Submit a TTS job to RunPod and return the run_id."""
     cleaned_text = clean_text_for_tts(text)
 
@@ -26,7 +26,7 @@ async def submit_tts_job(text: str) -> str:
     payload = {
         "input": {
             "text": cleaned_text,
-            "voice": DEFAULT_VOICE,
+            "voice": voice or DEFAULT_VOICE,
             "speed": DEFAULT_SPEED
         }
     }
