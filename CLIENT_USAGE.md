@@ -73,6 +73,7 @@ Check the status of a generation job.
   "status": "completed",
   "play_url": "/play/uuid-string",
   "mp3_url": "https://...signed-url-to-mp3...",
+  "ogg_url": "/api/audio/uuid-string?format=ogg",
   "error": null
 }
 ```
@@ -83,9 +84,24 @@ Check the status of a generation job.
   "status": "failed",
   "play_url": null,
   "mp3_url": null,
+  "ogg_url": null,
   "error": "Error message here"
 }
 ```
+
+### Download Audio
+
+**GET** `/api/audio/{job_id}?format=ogg`
+
+Serves the audio file in the requested format. When `format=ogg` is specified, the MP3 is converted on the fly to OGG Opus (suitable for Telegram voice messages).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `format` | string | No | `mp3` (default) or `ogg` |
+
+**Response:** Binary audio data with appropriate `Content-Type` (`audio/mpeg` or `audio/ogg`).
 
 ## Example Usage
 
@@ -137,6 +153,10 @@ curl -X POST "https://your-domain.com/api/generate" \
 
 # Check status
 curl "https://your-domain.com/api/status/JOB_ID_HERE" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Download as OGG Opus (for Telegram)
+curl -o audio.ogg "https://your-domain.com/api/audio/JOB_ID_HERE?format=ogg" \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 

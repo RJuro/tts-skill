@@ -1,8 +1,9 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Form, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, RedirectResponse
+import httpx
+from fastapi import FastAPI, HTTPException, Depends, Form, Request, BackgroundTasks, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -12,6 +13,7 @@ from app.config import TTS_API_KEY, PLAYLIST_PIN, MAX_TEXT_LENGTH, AVAILABLE_VOI
 from app import database as db
 from app.tts import submit_tts_job, check_tts_status, download_audio
 from app.groq_service import generate_title_and_description
+from app.audio_convert import convert_mp3_to_ogg_opus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ class StatusResponse(BaseModel):
     status: str
     play_url: Optional[str] = None
     mp3_url: Optional[str] = None
+    ogg_url: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -174,10 +177,56 @@ async def api_status(job_id: str, _: bool = Depends(verify_api_key)):
     if status == "completed":
         response.play_url = f"/play/{job_id}"
         response.mp3_url = gen.get("file_url")
+        response.ogg_url = f"/api/audio/{job_id}?format=ogg"
     elif status == "failed":
         response.error = gen.get("error")
 
     return response
+
+
+@app.get("/api/audio/{job_id}")
+async def api_audio(
+    job_id: str,
+    format: str = Query("mp3", pattern="^(mp3|ogg)$"),
+    _: bool = Depends(verify_api_key),
+):
+    """Serve audio in the requested format. Converts MP3 to OGG Opus on the fly."""
+    gen = db.get_generation(job_id)
+
+    if not gen:
+        raise HTTPException(status_code=404, detail="Generation not found")
+
+    if gen.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="Generation not yet completed")
+
+    # Get a fresh signed URL and download the MP3
+    storage_path = gen.get("storage_path")
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    file_url = gen.get("file_url") or db.refresh_signed_url(storage_path)
+    if not file_url:
+        raise HTTPException(status_code=404, detail="Could not retrieve audio URL")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(file_url)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to fetch audio file")
+        audio_bytes = resp.content
+
+    if format == "ogg":
+        audio_bytes = await convert_mp3_to_ogg_opus(audio_bytes)
+        return Response(
+            content=audio_bytes,
+            media_type="audio/ogg",
+            headers={"Content-Disposition": f'inline; filename="{job_id}.ogg"'},
+        )
+
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": f'inline; filename="{job_id}.mp3"'},
+    )
 
 
 # --- Web UI ---
