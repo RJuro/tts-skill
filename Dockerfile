@@ -2,7 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install ffmpeg for audio format conversion (MP3 -> OGG Opus)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
