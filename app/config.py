@@ -29,3 +29,8 @@ AVAILABLE_VOICES = {
     "am_michael": "Michael (Male)",
     "am_puck": "Puck (Male)",
 }
+
+# Local Kokoro TTS (CPU)
+KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL_PATH", "models/kokoro-v1.0.int8.onnx")
+KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES_PATH", "models/voices-v1.0.bin")
+CPU_WORD_LIMIT = int(os.getenv("CPU_WORD_LIMIT", "750"))  # ~5 min of audio

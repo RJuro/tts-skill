@@ -9,11 +9,12 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 
-from app.config import TTS_API_KEY, PLAYLIST_PIN, MAX_TEXT_LENGTH, AVAILABLE_VOICES, DEFAULT_VOICE
+from app.config import TTS_API_KEY, PLAYLIST_PIN, MAX_TEXT_LENGTH, AVAILABLE_VOICES, DEFAULT_VOICE, CPU_WORD_LIMIT
 from app import database as db
 from app.tts import submit_tts_job, check_tts_status, download_audio
 from app.groq_service import generate_title_and_description
 from app.audio_convert import convert_mp3_to_ogg_opus
+from app.local_tts import generate_local_tts, is_local_tts_available
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -109,6 +110,24 @@ async def process_tts_job(gen_id: str, runpod_job_id: str):
     logger.error(f"Generation {gen_id} timed out")
 
 
+async def process_local_tts_job(gen_id: str, text: str, voice: str | None):
+    """Background task for local CPU TTS generation via Kokoro ONNX."""
+    logger.info(f"Processing local TTS for generation {gen_id}")
+    try:
+        audio_bytes = await generate_local_tts(text, voice)
+        storage_path, file_url = db.upload_audio_to_storage(audio_bytes, gen_id)
+        db.update_generation_completed(gen_id, storage_path, file_url)
+        logger.info(f"Generation {gen_id} completed (local CPU)")
+    except Exception as e:
+        logger.error(f"Local TTS generation {gen_id} failed: {e}")
+        db.update_generation_failed(gen_id, str(e))
+
+
+def _should_use_local_tts(text: str) -> bool:
+    """Decide whether to route to local CPU TTS based on word count."""
+    return is_local_tts_available() and len(text.split()) <= CPU_WORD_LIMIT
+
+
 # --- API Endpoints ---
 
 @app.post("/api/generate", response_model=GenerateResponse)
@@ -147,19 +166,21 @@ async def api_generate(
 
     gen_id = gen["id"]
 
-    # Submit to RunPod
-    try:
-        runpod_job_id = await submit_tts_job(text, voice)
-        active_jobs[gen_id] = runpod_job_id
+    # Route: short texts → local CPU, long texts → RunPod GPU
+    if _should_use_local_tts(text):
+        background_tasks.add_task(process_local_tts_job, gen_id, text, voice)
+        logger.info(f"Generation {gen_id} routed to local CPU ({len(text.split())} words)")
+    else:
+        try:
+            runpod_job_id = await submit_tts_job(text, voice)
+            active_jobs[gen_id] = runpod_job_id
+            background_tasks.add_task(process_tts_job, gen_id, runpod_job_id)
+            logger.info(f"Generation {gen_id} routed to RunPod GPU ({len(text.split())} words)")
+        except Exception as e:
+            db.update_generation_failed(gen_id, str(e))
+            raise HTTPException(status_code=500, detail=f"Failed to submit TTS job: {e}")
 
-        # Start background processing
-        background_tasks.add_task(process_tts_job, gen_id, runpod_job_id)
-
-        return GenerateResponse(job_id=gen_id, status="processing")
-
-    except Exception as e:
-        db.update_generation_failed(gen_id, str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to submit TTS job: {e}")
+    return GenerateResponse(job_id=gen_id, status="processing")
 
 
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
@@ -281,12 +302,15 @@ async def web_generate(
 
     gen_id = gen["id"]
 
-    # Submit to RunPod
-    try:
-        runpod_job_id = await submit_tts_job(text, voice)
-        background_tasks.add_task(process_tts_job, gen_id, runpod_job_id)
-    except Exception as e:
-        db.update_generation_failed(gen_id, str(e))
+    # Route: short texts → local CPU, long texts → RunPod GPU
+    if _should_use_local_tts(text):
+        background_tasks.add_task(process_local_tts_job, gen_id, text, voice)
+    else:
+        try:
+            runpod_job_id = await submit_tts_job(text, voice)
+            background_tasks.add_task(process_tts_job, gen_id, runpod_job_id)
+        except Exception as e:
+            db.update_generation_failed(gen_id, str(e))
 
     return RedirectResponse(url="/", status_code=303)
 
