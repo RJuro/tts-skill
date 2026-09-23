@@ -55,6 +55,9 @@ class GenerateRequest(BaseModel):
     text: str
     title: Optional[str] = None
     voice: Optional[str] = None
+    # "gpu" sends the job to RunPod whatever its length; "cpu" to local Kokoro. Omitted, the word
+    # count decides (CPU_WORD_LIMIT).
+    engine: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):
@@ -110,11 +113,17 @@ async def process_tts_job(gen_id: str, runpod_job_id: str):
     logger.error(f"Generation {gen_id} timed out")
 
 
+# One CPU synthesis at a time. Each job used to run in its own thread, so a few at once pegged the
+# CPU and the whole API stopped answering, status and docs included, while jobs sat "processing".
+_CPU_JOB = asyncio.Semaphore(1)
+
+
 async def process_local_tts_job(gen_id: str, text: str, voice: str | None):
     """Background task for local CPU TTS generation via Kokoro ONNX."""
     logger.info(f"Processing local TTS for generation {gen_id}")
     try:
-        audio_bytes = await generate_local_tts(text, voice)
+        async with _CPU_JOB:
+            audio_bytes = await generate_local_tts(text, voice)
         storage_path, file_url = db.upload_audio_to_storage(audio_bytes, gen_id)
         db.update_generation_completed(gen_id, storage_path, file_url)
         logger.info(f"Generation {gen_id} completed (local CPU)")
@@ -123,8 +132,12 @@ async def process_local_tts_job(gen_id: str, text: str, voice: str | None):
         db.update_generation_failed(gen_id, str(e))
 
 
-def _should_use_local_tts(text: str) -> bool:
-    """Decide whether to route to local CPU TTS based on word count."""
+def _should_use_local_tts(text: str, engine: str | None = None) -> bool:
+    """Route to local CPU TTS: when asked for, else by word count. `gpu` never goes local."""
+    if engine == "gpu":
+        return False
+    if engine == "cpu":
+        return is_local_tts_available()
     return is_local_tts_available() and len(text.split()) <= CPU_WORD_LIMIT
 
 
@@ -150,6 +163,10 @@ async def api_generate(
     if voice and voice not in AVAILABLE_VOICES:
         raise HTTPException(status_code=400, detail=f"Invalid voice. Available: {', '.join(AVAILABLE_VOICES.keys())}")
 
+    engine = request.engine
+    if engine not in (None, "gpu", "cpu"):
+        raise HTTPException(status_code=400, detail="Invalid engine. Available: gpu, cpu")
+
     # Generate title/description if not provided
     title = request.title
     description = None
@@ -166,8 +183,8 @@ async def api_generate(
 
     gen_id = gen["id"]
 
-    # Route: short texts → local CPU, long texts → RunPod GPU
-    if _should_use_local_tts(text):
+    # Route: the engine asked for, else short texts → local CPU, long texts → RunPod GPU
+    if _should_use_local_tts(text, engine):
         background_tasks.add_task(process_local_tts_job, gen_id, text, voice)
         logger.info(f"Generation {gen_id} routed to local CPU ({len(text.split())} words)")
     else:

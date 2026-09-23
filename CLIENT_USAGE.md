@@ -34,6 +34,7 @@ Submits text for TTS generation. Returns immediately with a job ID while process
 | `text` | string | Yes | Text to convert (max 25,000 chars) |
 | `title` | string | No | Custom title. Auto-generated if omitted |
 | `voice` | string | No | Voice to use. Defaults to `af_heart` |
+| `engine` | string | No | `gpu` sends the job to RunPod whatever its length; `cpu` to the local Kokoro. Omitted, texts up to `CPU_WORD_LIMIT` words (750) run on the CPU, one at a time, and longer ones on RunPod |
 
 **Available Voices:**
 
