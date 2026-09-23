@@ -79,7 +79,9 @@ async def process_tts_job(gen_id: str, runpod_job_id: str):
     """Background task to poll RunPod and update DB when complete."""
     logger.info(f"Processing TTS job {runpod_job_id} for generation {gen_id}")
 
-    max_attempts = 60  # 5 minutes max (5s * 60)
+    # 15 minutes (5s * 180). Five was shorter than a job can sit in RunPod's queue waiting for a
+    # worker, and a job given up on here is lost even when RunPod finishes it afterwards.
+    max_attempts = 180
     for attempt in range(max_attempts):
         await asyncio.sleep(5)
 
